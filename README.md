@@ -33,8 +33,8 @@ A Next.js frontend application for a donation and volunteer coordination platfor
 
 ## Technologies
 
-- Next.js 14
+- Spring Boot
 - React 18
-- TypeScript
+- JavaScript
 - Tailwind CSS
 - Shadcn UI
