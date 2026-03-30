@@ -6,7 +6,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
-
+@CrossOrigin(origins = "http://localhost:3000") 
 @RestController
 @RequestMapping("/api/users")
 public class UserController {
@@ -19,7 +19,6 @@ public Object register(@RequestBody User user) {
     try {
         return userService.registerUser(user);
     } catch (RuntimeException e) {
-        // Returns the error message instead of crashing
         return String.format("{\"error\": \"%s\"}", e.getMessage());
     }
 }
