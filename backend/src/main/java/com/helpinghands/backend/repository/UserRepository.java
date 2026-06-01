@@ -6,7 +6,7 @@ import org.springframework.stereotype.Repository;
 import java.util.Optional;
 
 @Repository
-public interface UserRepository extends JpaRepository<User, Long> {
+public interface UserRepository extends JpaRepository<User, Integer> {
     // This magic line tells Spring to create: SELECT * FROM users WHERE email = ?
     Optional<User> findByEmail(String email);
 }

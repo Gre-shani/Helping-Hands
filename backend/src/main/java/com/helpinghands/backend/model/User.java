@@ -41,4 +41,7 @@ public class User {
 
     @Column(name = "is_public_profile")
     private Boolean isPublicProfile = false;
+
+    @Column(name = "profile_completion_status", columnDefinition = "ENUM('INCOMPLETE', 'IN_PROGRESS', 'COMPLETED') DEFAULT 'INCOMPLETE'")
+    private String profileCompletionStatus = "INCOMPLETE";
 }
