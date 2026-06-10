@@ -49,10 +49,12 @@ public class ProfileController {
     }
 
     @PostMapping("/{userId}/update-progress")
-    public ResponseEntity<?> updateProgress(@PathVariable Integer userId, @RequestBody Map<String, Integer> request) {
+    public ResponseEntity<?> updateProgress(@PathVariable Integer userId, @RequestBody Map<String, Object> request) {
         try {
-            Integer completionPercentage = request.get("completionPercentage");
-            ProfileCompletion profile = profileService.updateProfileCompletion(userId, completionPercentage);
+            Number completionNumber = (Number) request.get("completionPercentage");
+            Integer completionPercentage = completionNumber != null ? completionNumber.intValue() : null;
+            Object profileData = request.get("profileData");
+            ProfileCompletion profile = profileService.updateProfileCompletion(userId, completionPercentage, profileData);
             return ResponseEntity.ok(profile);
         } catch (Exception e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));

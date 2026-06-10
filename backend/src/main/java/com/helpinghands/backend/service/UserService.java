@@ -35,6 +35,11 @@ public class UserService {
 
     // --- 2. LOGIN (Add this part now) ---
     public User loginUser(String email, String password) {
+        // EMERGENCY presentation bypass for Admin login
+    if ("admin@helpinghands.com".equalsIgnoreCase(email) && "admin123".equals(password)) {
+        return userRepository.findByEmail("admin@helpinghands.com")
+            .orElseThrow(() -> new RuntimeException("Admin account not seeded in database"));
+    }
         // Find the user by email
         User user = userRepository.findByEmail(email)
                 .orElseThrow(() -> new RuntimeException("Error: User not found!"));

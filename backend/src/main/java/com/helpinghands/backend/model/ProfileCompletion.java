@@ -22,6 +22,9 @@ public class ProfileCompletion {
     @Column(name = "completion_percentage")
     private Integer completionPercentage = 0;
 
+    @Column(name = "profile_data", columnDefinition = "TEXT")
+    private String profileData;
+
     @Column(name = "is_completed")
     private Boolean isCompleted = false;
 

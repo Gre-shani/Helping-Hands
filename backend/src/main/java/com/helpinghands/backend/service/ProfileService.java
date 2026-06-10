@@ -1,12 +1,18 @@
 package com.helpinghands.backend.service;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.helpinghands.backend.model.ProfileCompletion;
 import com.helpinghands.backend.model.User;
 import com.helpinghands.backend.repository.ProfileCompletionRepository;
 import com.helpinghands.backend.repository.UserRepository;
+
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
+import java.util.Map;
 import java.util.Optional;
 
 @Service
@@ -17,6 +23,9 @@ public class ProfileService {
 
     @Autowired
     private UserRepository userRepository;
+
+    @PersistenceContext
+    private EntityManager entityManager;
 
     public ProfileCompletion getProfileCompletion(Integer userId) {
         Optional<ProfileCompletion> profile = profileCompletionRepository.findByUserId(userId);
@@ -38,6 +47,10 @@ public class ProfileService {
     }
 
     public ProfileCompletion updateProfileCompletion(Integer userId, Integer completionPercentage) {
+        return updateProfileCompletion(userId, completionPercentage, null);
+    }
+
+    public ProfileCompletion updateProfileCompletion(Integer userId, Integer completionPercentage, Object profileData) {
         Optional<ProfileCompletion> profileOpt = profileCompletionRepository.findByUserId(userId);
         if (profileOpt.isEmpty()) {
             throw new RuntimeException("Profile not found for user: " + userId);
@@ -45,9 +58,17 @@ public class ProfileService {
 
         ProfileCompletion profile = profileOpt.get();
         profile.setCompletionPercentage(completionPercentage);
+        if (profileData != null) {
+            try {
+                profile.setProfileData(new ObjectMapper().writeValueAsString(profileData));
+            } catch (Exception e) {
+                throw new RuntimeException("Failed to serialize profile data", e);
+            }
+        }
         return profileCompletionRepository.save(profile);
     }
 
+    @Transactional
     public ProfileCompletion markProfileComplete(Integer userId) {
         Optional<ProfileCompletion> profileOpt = profileCompletionRepository.findByUserId(userId);
         if (profileOpt.isEmpty()) {
@@ -59,9 +80,35 @@ public class ProfileService {
         profile.setCompletionPercentage(100);
         ProfileCompletion saved = profileCompletionRepository.save(profile);
 
-        User user = userRepository.findById(userId).orElseThrow(() -> new RuntimeException("User not found"));
-        user.setProfileCompletionStatus("COMPLETED");
-        userRepository.save(user);
+        String phoneVal = null;
+        String addressVal = null;
+
+        // Parse the tracked wizard data safely
+        if (profile.getProfileData() != null) {
+            try {
+                Map<String, Object> parsed = new ObjectMapper().readValue(profile.getProfileData(), Map.class);
+                if (parsed.containsKey("phone") && parsed.get("phone") != null) {
+                    phoneVal = parsed.get("phone").toString();
+                }
+                if (parsed.containsKey("address") && parsed.get("address") != null) {
+                    addressVal = parsed.get("address").toString();
+                }
+            } catch (Exception e) {
+                System.out.println("Warning: Could not parse wizard data string: " + e.getMessage());
+            }
+        }
+
+        // Force the database to update the user row directly via Native SQL
+        try {
+            String sql = "UPDATE users SET profile_completion_status = 'COMPLETED', phone = :phone, address = :address WHERE user_id = :userId";
+            entityManager.createNativeQuery(sql)
+                         .setParameter("phone", phoneVal)
+                         .setParameter("address", addressVal)
+                         .setParameter("userId", userId)
+                         .executeUpdate();
+        } catch (Exception e) {
+            throw new RuntimeException("Direct database update failed", e);
+        }
 
         return saved;
     }
