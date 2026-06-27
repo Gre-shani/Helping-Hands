@@ -7,26 +7,63 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import java.util.List;
 import java.util.Map;
+import java.util.HashMap;
 import java.util.ArrayList;
 
 @RestController
 @RequestMapping("/api/admin")
-@CrossOrigin(origins = "http://localhost:3000") // Matches your frontend port
+@CrossOrigin(origins = "http://localhost:3000") 
 public class AdminController {
 
     @PersistenceContext
     private EntityManager entityManager;
 
+    // NEW ENDPOINT: Aggregates metrics from your live tables for the top summary cards
+    @GetMapping("/dashboard-summary")
+    public ResponseEntity<?> getDashboardSummary() {
+        try {
+            Map<String, Object> summary = new HashMap<>();
+
+            // 1. Get total users count
+            long totalAccounts = ((Number) entityManager.createNativeQuery("SELECT COUNT(*) FROM users").getSingleResult()).longValue();
+
+            // 2. Calculate awaiting security review (sum of pending profiles)
+            long pendingHomes = ((Number) entityManager.createNativeQuery(
+                "SELECT COUNT(*) FROM users u JOIN childrens_homes ch ON u.user_id = ch.user_id WHERE u.role = 'CHILDRENS_HOME' AND (ch.verified = FALSE OR ch.verified IS NULL)"
+            ).getSingleResult()).longValue();
+
+            long pendingProviders = ((Number) entityManager.createNativeQuery(
+                "SELECT COUNT(*) FROM users u JOIN service_providers sp ON u.user_id = sp.user_id WHERE u.role = 'SERVICE_PROVIDER' AND (sp.verification_status = 'Pending' OR sp.verification_status IS NULL)"
+            ).getSingleResult()).longValue();
+
+            long awaitingReview = pendingHomes + pendingProviders;
+
+            // 3. Count approved platforms users (Donors or verified entities)
+            long registeredDonors = ((Number) entityManager.createNativeQuery(
+                "SELECT COUNT(*) FROM users WHERE role = 'DONOR' OR profile_completion_status = 'COMPLETED'"
+            ).getSingleResult()).longValue();
+
+            summary.put("totalAccounts", totalAccounts);
+            summary.put("awaitingReview", awaitingReview);
+            summary.put("registeredDonors", registeredDonors);
+
+            return ResponseEntity.ok(summary);
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body(Map.of("error", "Failed to compute dashboard metrics: " + e.getMessage()));
+        }
+    }
+
     @GetMapping("/pending-verifications")
     public ResponseEntity<?> getPendingVerifications() {
         try {
-            // Native SQL Union combining pending Children's Homes and Service Providers
-            String sql = "SELECT u.user_id AS userId, ch.home_name AS businessName, u.full_name AS fullName, u.email AS email, u.role AS role, ch.reg_certificate_url AS docUrl " +
-                         "FROM users u JOIN childrens_homes ch ON u.user_id = ch.user_id WHERE ch.verified = FALSE " +
+            String sql = "SELECT u.user_id AS userId, COALESCE(ch.home_name, 'Name Not Provided') AS businessName, u.full_name AS fullName, u.email AS email, u.role AS role, COALESCE(ch.reg_certificate_url, '') AS docUrl " +
+                         "FROM users u LEFT JOIN childrens_homes ch ON u.user_id = ch.user_id " +
+                         "WHERE u.role = 'CHILDRENS_HOME' AND (ch.verified = FALSE OR ch.verified IS NULL) " +
                          "UNION " +
-                         "SELECT u.user_id AS userId, u.full_name AS businessName, u.full_name AS fullName, u.email AS email, u.role AS role, sp.police_clearance_url AS docUrl " +
-                         "FROM users u JOIN service_providers sp ON u.user_id = sp.user_id WHERE sp.verification_status = 'Pending'";
-
+                         "SELECT u.user_id AS userId, u.full_name AS businessName, u.full_name AS fullName, u.email AS email, u.role AS role, COALESCE(sp.police_clearance_url, '') AS docUrl " +
+                         "FROM users u LEFT JOIN service_providers sp ON u.user_id = sp.user_id " +
+                         "WHERE u.role = 'SERVICE_PROVIDER' AND (sp.verification_status = 'Pending' OR sp.verification_status IS NULL)";
+             
             List<Object[]> rows = entityManager.createNativeQuery(sql).getResultList();
             List<Map<String, Object>> result = new ArrayList<>();
 
@@ -71,7 +108,6 @@ public class AdminController {
     @Transactional
     public ResponseEntity<?> deleteUser(@PathVariable int userId) {
         try {
-            // Handled via ON DELETE CASCADE in your foreign keys
             entityManager.createNativeQuery("DELETE FROM users WHERE user_id = ?")
                     .setParameter(1, userId)
                     .executeUpdate();
@@ -82,25 +118,28 @@ public class AdminController {
         }
     }
 
+    // CHANGED: Shifted @RequestParam to a clean object request wrapper or simple payload processing to match frontend fetch calls cleanly
     @PutMapping("/approve/{userId}")
     @Transactional
-    public ResponseEntity<?> approveUser(@PathVariable int userId, @RequestParam String role) {
+    public ResponseEntity<?> approveUser(@PathVariable int userId, @RequestBody Map<String, String> payload) {
         try {
-            if ("Childrens_Home".equalsIgnoreCase(role.trim())) {
-                // Update the specialized profile table flag
+            String role = payload.get("role");
+            if (role == null) {
+                return ResponseEntity.badRequest().body(Map.of("error", "Role type descriptor is mandatory"));
+            }
+
+            if ("Childrens_Home".equalsIgnoreCase(role.trim()) || "CHILDRENS_HOME".equalsIgnoreCase(role.trim())) {
                 entityManager.createNativeQuery(
                     "UPDATE childrens_homes SET verified = TRUE WHERE user_id = ?")
                     .setParameter(1, userId)
                     .executeUpdate();
-            } else if ("Service_Provider".equalsIgnoreCase(role.trim())) {
-                // Update the specialized provider status enum
+            } else if ("Service_Provider".equalsIgnoreCase(role.trim()) || "SERVICE_PROVIDER".equalsIgnoreCase(role.trim())) {
                 entityManager.createNativeQuery(
                     "UPDATE service_providers SET verification_status = 'Approved' WHERE user_id = ?")
                     .setParameter(1, userId)
                     .executeUpdate();
             }
 
-            // Optional: You can also update profile_completion_status to 'COMPLETED' here if desired
             entityManager.createNativeQuery(
                 "UPDATE users SET profile_completion_status = 'COMPLETED' WHERE user_id = ?")
                 .setParameter(1, userId)
@@ -112,4 +151,3 @@ public class AdminController {
         }
     }
 }
-
