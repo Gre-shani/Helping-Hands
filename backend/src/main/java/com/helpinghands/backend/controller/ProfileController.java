@@ -1,9 +1,14 @@
 package com.helpinghands.backend.controller;
 
+import com.helpinghands.backend.model.ChildrenHome;
 import com.helpinghands.backend.model.ProfileCompletion;
+import com.helpinghands.backend.model.ServiceProvider;
+import java.util.HashMap;
 import com.helpinghands.backend.service.ProfileService;
-import org.springframework.beans.factory.annotation.Autowired;
+import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
+import org.springframework.validation.BindingResult;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
@@ -11,10 +16,14 @@ import java.util.Map;
 @CrossOrigin(origins = "http://localhost:3000")
 @RestController
 @RequestMapping("/api/profiles")
+@Validated
 public class ProfileController {
 
-    @Autowired
-    private ProfileService profileService;
+    private final ProfileService profileService;
+
+    public ProfileController(ProfileService profileService) {
+        this.profileService = profileService;
+    }
 
     @GetMapping("/{userId}/completion-status")
     public ResponseEntity<?> getCompletionStatus(@PathVariable Integer userId) {
@@ -43,6 +52,66 @@ public class ProfileController {
             String role = request.get("role");
             ProfileCompletion profile = profileService.initializeProfileCompletion(userId, role);
             return ResponseEntity.ok(profile);
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @PostMapping("/children-home")
+    public ResponseEntity<?> submitChildrenHomeProfile(
+            @RequestHeader(value = "X-User-Id", required = false) Integer userId,
+            @Valid @RequestBody ChildrenHomeProfileRequest request,
+            BindingResult bindingResult) {
+        if (userId == null) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Missing X-User-Id header"));
+        }
+        if (bindingResult.hasErrors()) {
+            return ResponseEntity.badRequest().body(Map.of("error", bindingResult.getAllErrors().get(0).getDefaultMessage()));
+        }
+
+        try {
+            ChildrenHome savedHome = profileService.saveChildrenHomeProfile(userId, request);
+            return ResponseEntity.ok(Map.of("status", "SUBMITTED", "childrenHome", savedHome));
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @PostMapping("/service-provider")
+    public ResponseEntity<?> submitServiceProviderProfile(
+            @RequestHeader(value = "X-User-Id", required = false) Integer userId,
+            @Valid @RequestBody ServiceProviderProfileRequest request,
+            BindingResult bindingResult) {
+        if (userId == null) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Missing X-User-Id header"));
+        }
+        if (bindingResult.hasErrors()) {
+            return ResponseEntity.badRequest().body(Map.of("error", bindingResult.getAllErrors().get(0).getDefaultMessage()));
+        }
+
+        try {
+            ServiceProvider savedProvider = profileService.saveServiceProviderProfile(userId, request);
+            return ResponseEntity.ok(Map.of("status", "SUBMITTED", "serviceProvider", savedProvider));
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @PostMapping(value = "/delivery-volunteer", consumes = "application/json")
+    public ResponseEntity<?> submitDeliveryVolunteerProfile(
+            @RequestHeader(value = "X-User-Id", required = false) Integer userId,
+            @Valid @RequestBody DeliveryVolunteerProfileRequest request,
+            BindingResult bindingResult) {
+        if (userId == null) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Missing X-User-Id header"));
+        }
+        if (bindingResult.hasErrors()) {
+            return ResponseEntity.badRequest().body(Map.of("error", bindingResult.getAllErrors().get(0).getDefaultMessage()));
+        }
+
+        try {
+            Map<String, Object> response = profileService.saveDeliveryVolunteerProfile(userId, request);
+            return ResponseEntity.ok(response);
         } catch (Exception e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }

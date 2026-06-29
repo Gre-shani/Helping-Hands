@@ -51,3 +51,28 @@ export const getDocuments = (userId) => {
 export const deleteDocument = (documentId) => {
     return axios.delete(`${DOCUMENTS_API_URL}/${documentId}`);
 };
+
+// ===== Profile Setup =====
+export const submitChildrenHomeProfile = (userId, data) => {
+    return axios.post(`${PROFILE_API_URL}/children-home`, data, {
+        headers: {
+            'X-User-Id': userId
+        }
+    });
+};
+
+export const submitServiceProviderProfile = (userId, data) => {
+    return axios.post(`${PROFILE_API_URL}/service-provider`, data, {
+        headers: {
+            'X-User-Id': userId
+        }
+    });
+};
+
+export const submitDeliveryVolunteerProfile = (userId, data) => {
+    return axios.post(`${PROFILE_API_URL}/delivery-volunteer`, data, {
+        headers: {
+            'X-User-Id': userId
+        }
+    });
+};

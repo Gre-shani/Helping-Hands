@@ -76,7 +76,11 @@ const AdminDashboard = () => {
   };
 
   if (loading) {
-    return <div className="p-8 text-slate-500 font-semibold text-center mt-20">Refreshing system metrics center...</div>;
+    return (
+      <div className="p-8 text-slate-500 font-semibold text-center mt-20">
+        Refreshing system metrics center...
+      </div>
+    );
   }
 
   return (
@@ -131,7 +135,7 @@ const AdminDashboard = () => {
               {unverifiedQueue.map((item) => (
                 <div key={item.userId} className="border border-slate-100 rounded-xl p-5 flex justify-between items-center bg-white hover:bg-slate-50/50 transition">
                   <div className="space-y-1">
-                    <p className="text-base font-bold text-[#1e293b]">{item.businessName}</p>
+                    <p className="text-base font-bold text-[#1e293b]">{item.businessName || "Individual Registration"}</p>
                     <p className="text-xs text-slate-500">
                       Representative: <span className="font-semibold text-slate-700">{item.fullName}</span> ({item.email})
                     </p>
@@ -197,77 +201,89 @@ const AdminDashboard = () => {
 
       </div>
 
-      {/* --- THE AUDIT MODAL MODAL POPUP --- */}
-      {showModal && selectedUser && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <div className="bg-[#111827] border border-slate-800 text-white rounded-2xl w-full max-w-2xl shadow-2xl overflow-hidden">
-            
-            <div className="bg-[#0b0f17] p-6 border-b border-slate-800/80 flex justify-between items-start">
-              <div>
-                <h3 className="text-xl font-bold tracking-tight text-white">Document Audit Verification</h3>
-                <p className="text-slate-400 text-xs mt-1">Review organization claims before live platform activation.</p>
-              </div>
-              <button onClick={() => setShowModal(false)} className="text-slate-400 hover:text-white transition font-bold text-lg">✕</button>
+      {/* Verification Modal Component Instance */}
+      <AuditModal 
+        isOpen={showModal} 
+        user={selectedUser} 
+        onClose={() => setShowModal(false)} 
+        onApprove={handleConfirmApprove} 
+      />
+    </div>
+  );
+};
+
+// Extracted Sub-Component for Clean Structure
+const AuditModal = ({ isOpen, user, onClose, onApprove }) => {
+  if (!isOpen || !user) return null;
+
+  return (
+    <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+      <div className="bg-[#111827] border border-slate-800 text-white rounded-2xl w-full max-w-2xl shadow-2xl overflow-hidden">
+        
+        <div className="bg-[#0b0f17] p-6 border-b border-slate-800/80 flex justify-between items-start">
+          <div>
+            <h3 className="text-xl font-bold tracking-tight text-white">Document Audit Verification</h3>
+            <p className="text-slate-400 text-xs mt-1">Review organization claims before live platform activation.</p>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-white transition font-bold text-lg">✕</button>
+        </div>
+
+        <div className="p-6 space-y-6">
+          <div className="grid grid-cols-2 gap-6">
+            <div>
+              <label className="block text-[10px] font-bold tracking-wider text-slate-400 uppercase">Organization Name</label>
+              <p className="text-lg font-bold mt-1 text-white">{user.businessName || "N/A (Individual)"}</p>
             </div>
+            <div>
+              <label className="block text-[10px] font-bold tracking-wider text-slate-400 uppercase">Account Representative</label>
+              <p className="text-base font-semibold mt-1 text-slate-200">{user.fullName}</p>
+            </div>
+          </div>
 
-            <div className="p-6 space-y-6">
-              <div className="grid grid-cols-2 gap-6">
-                <div>
-                  <label className="block text-[10px] font-bold tracking-wider text-slate-400 uppercase">Organization Name</label>
-                  <p className="text-lg font-bold mt-1 text-white">{selectedUser.businessName}</p>
-                </div>
-                <div>
-                  <label className="block text-[10px] font-bold tracking-wider text-slate-400 uppercase">Account Representative</label>
-                  <p className="text-base font-semibold mt-1 text-slate-200">{selectedUser.fullName}</p>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-6">
-                <div>
-                  <label className="block text-[10px] font-bold tracking-wider text-slate-400 uppercase">Email Contact</label>
-                  <p className="text-base font-medium mt-1 text-slate-300">{selectedUser.email}</p>
-                </div>
-                <div>
-                  <label className="block text-[10px] font-bold tracking-wider text-slate-400 uppercase">Requested Access Role</label>
-                  <div className="mt-1.5">
-                    <span className="bg-amber-500/10 text-amber-400 border border-amber-500/20 font-bold text-[10px] tracking-wider px-2.5 py-1 rounded-md uppercase">
-                      {selectedUser.role}
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <label className="block text-[10px] font-bold tracking-wider text-slate-400 uppercase">Uploaded Document Certificate</label>
-                {selectedUser.docUrl ? (
-                  <div className="bg-blue-500/5 border border-blue-500/20 rounded-xl p-4 flex justify-between items-center text-blue-400">
-                    <span className="text-xs font-mono truncate max-w-[400px]">{selectedUser.docUrl}</span>
-                    <a href={selectedUser.docUrl} target="_blank" rel="noreferrer" className="bg-blue-600 hover:bg-blue-500 text-white text-xs px-3 py-1 rounded font-semibold">View File</a>
-                  </div>
-                ) : (
-                  <div className="bg-amber-500/5 border border-amber-500/20 rounded-xl p-4 flex gap-3 text-amber-300">
-                    <span className="text-sm mt-0.5">⚠️</span>
-                    <p className="text-xs leading-relaxed text-amber-200/90">
-                      Operational Error: The registration setup wizard was submitted but no physical validation attachment files were detected on disk.
-                    </p>
-                  </div>
-                )}
+          <div className="grid grid-cols-2 gap-6">
+            <div>
+              <label className="block text-[10px] font-bold tracking-wider text-slate-400 uppercase">Email Contact</label>
+              <p className="text-base font-medium mt-1 text-slate-300">{user.email}</p>
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold tracking-wider text-slate-400 uppercase">Requested Access Role</label>
+              <div className="mt-1.5">
+                <span className="bg-amber-500/10 text-amber-400 border border-amber-500/20 font-bold text-[10px] tracking-wider px-2.5 py-1 rounded-md uppercase">
+                  {user.role}
+                </span>
               </div>
             </div>
+          </div>
 
-            <div className="bg-[#0b0f17]/40 px-6 py-4 border-t border-slate-800/80 flex justify-end items-center gap-4">
-              <button onClick={() => setShowModal(false)} className="text-sm font-semibold text-slate-400 hover:text-slate-200 transition">Cancel</button>
-              <button 
-                onClick={handleConfirmApprove}
-                className="bg-[#4fd1c5] hover:bg-[#3bc0b4] text-slate-900 font-extrabold text-sm px-5 py-2.5 rounded-xl transition shadow-md"
-              >
-                Confirm & Approve Profile
-              </button>
-            </div>
-
+          <div className="space-y-2">
+            <label className="block text-[10px] font-bold tracking-wider text-slate-400 uppercase">Uploaded Document Certificate</label>
+            {user.docUrl ? (
+              <div className="bg-blue-500/5 border border-blue-500/20 rounded-xl p-4 flex justify-between items-center text-blue-400">
+                <span className="text-xs font-mono truncate max-w-[400px]">{user.docUrl}</span>
+                <a href={user.docUrl} target="_blank" rel="noreferrer" className="bg-blue-600 hover:bg-blue-500 text-white text-xs px-3 py-1 rounded font-semibold">View File</a>
+              </div>
+            ) : (
+              <div className="bg-amber-500/5 border border-amber-500/20 rounded-xl p-4 flex gap-3 text-amber-300">
+                <span className="text-sm mt-0.5">⚠️</span>
+                <p className="text-xs leading-relaxed text-amber-200/90">
+                  Operational Error: The registration setup wizard was submitted but no physical validation attachment files were detected on disk.
+                </p>
+              </div>
+            )}
           </div>
         </div>
-      )}
+
+        <div className="bg-[#0b0f17]/40 px-6 py-4 border-t border-slate-800/80 flex justify-end items-center gap-4">
+          <button onClick={onClose} className="text-sm font-semibold text-slate-400 hover:text-slate-200 transition">Cancel</button>
+          <button 
+            onClick={onApprove}
+            className="bg-[#4fd1c5] hover:bg-[#3bc0b4] text-slate-900 font-extrabold text-sm px-5 py-2.5 rounded-xl transition shadow-md"
+          >
+            Confirm & Approve Profile
+          </button>
+        </div>
+
+      </div>
     </div>
   );
 };

@@ -1,9 +1,15 @@
 package com.helpinghands.backend.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.helpinghands.backend.controller.ChildrenHomeProfileRequest;
+import com.helpinghands.backend.controller.DeliveryVolunteerProfileRequest;
+import com.helpinghands.backend.controller.ServiceProviderProfileRequest;
+import com.helpinghands.backend.model.ChildrenHome;
 import com.helpinghands.backend.model.ProfileCompletion;
-import com.helpinghands.backend.model.User;
+import com.helpinghands.backend.model.ServiceProvider;
+import com.helpinghands.backend.repository.ChildrenHomeRepository;
 import com.helpinghands.backend.repository.ProfileCompletionRepository;
+import com.helpinghands.backend.repository.ServiceProviderRepository;
 import com.helpinghands.backend.repository.UserRepository;
 
 import jakarta.persistence.EntityManager;
@@ -23,6 +29,12 @@ public class ProfileService {
 
     @Autowired
     private UserRepository userRepository;
+
+    @Autowired
+    private ChildrenHomeRepository childrenHomeRepository;
+
+    @Autowired
+    private ServiceProviderRepository serviceProviderRepository;
 
     @PersistenceContext
     private EntityManager entityManager;
@@ -44,6 +56,64 @@ public class ProfileService {
         profile.setCompletionPercentage(0);
         profile.setIsCompleted(false);
         return profileCompletionRepository.save(profile);
+    }
+
+    @Transactional
+    public ChildrenHome saveChildrenHomeProfile(Integer userId, ChildrenHomeProfileRequest request) {
+        var user = userRepository.findById(userId)
+                .orElseThrow(() -> new RuntimeException("User not found for userId: " + userId));
+
+        var childrenHome = childrenHomeRepository.findByUserId(userId)
+                .orElse(new ChildrenHome());
+
+        childrenHome.setUserId(userId);
+        childrenHome.setHomeName(request.getHomeName());
+        childrenHome.setRegistrationNumber(request.getRegistrationNumber());
+        childrenHome.setCapacity(request.getCapacity());
+        childrenHome.setBankAccountDetails(request.getBankAccountDetails());
+        childrenHome.setRegCertificateUrl(request.getRegCertificateUrl());
+
+        var savedHome = childrenHomeRepository.save(childrenHome);
+        user.setProfileCompletionStatus("SUBMITTED");
+        userRepository.save(user);
+
+        return savedHome;
+    }
+
+    @Transactional
+    public ServiceProvider saveServiceProviderProfile(Integer userId, ServiceProviderProfileRequest request) {
+        var user = userRepository.findById(userId)
+                .orElseThrow(() -> new RuntimeException("User not found for userId: " + userId));
+
+        var provider = serviceProviderRepository.findByUserId(userId)
+                .orElse(new ServiceProvider());
+
+        provider.setUserId(userId);
+        provider.setServiceType(request.getServiceType());
+        provider.setOperationalRegion(request.getOperationalRegion());
+        provider.setPoliceClearanceUrl(request.getPoliceClearanceUrl());
+
+        var savedProvider = serviceProviderRepository.save(provider);
+        user.setProfileCompletionStatus("SUBMITTED");
+        userRepository.save(user);
+
+        return savedProvider;
+    }
+
+    public Map<String, Object> saveDeliveryVolunteerProfile(Integer userId, DeliveryVolunteerProfileRequest request) {
+        var user = userRepository.findById(userId)
+                .orElseThrow(() -> new RuntimeException("User not found for userId: " + userId));
+
+        user.setProfileCompletionStatus("SUBMITTED");
+        userRepository.save(user);
+
+        return Map.of(
+                "status", "SUBMITTED",
+                "deliveryVolunteer", Map.of(
+                        "nicFrontImage", request.getNicFrontImage(),
+                        "nicBackImage", request.getNicBackImage()
+                )
+        );
     }
 
     public ProfileCompletion updateProfileCompletion(Integer userId, Integer completionPercentage) {
@@ -83,7 +153,6 @@ public class ProfileService {
         String phoneVal = null;
         String addressVal = null;
 
-        // Parse the tracked wizard data safely
         if (profile.getProfileData() != null) {
             try {
                 Map<String, Object> parsed = new ObjectMapper().readValue(profile.getProfileData(), Map.class);
@@ -98,7 +167,6 @@ public class ProfileService {
             }
         }
 
-        // Force the database to update the user row directly via Native SQL
         try {
             String sql = "UPDATE users SET profile_completion_status = 'COMPLETED', phone = :phone, address = :address WHERE user_id = :userId";
             entityManager.createNativeQuery(sql)
