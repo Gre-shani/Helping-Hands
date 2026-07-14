@@ -1,0 +1,240 @@
+package com.helpinghands.application.service;
+
+import com.helpinghands.api.exception.ApiException;
+import com.helpinghands.application.dto.document.DocumentResponse;
+import com.helpinghands.domain.entity.*;
+import com.helpinghands.infrastructure.repository.ChildrensHomeRepository;
+import com.helpinghands.infrastructure.repository.DocumentRepository;
+import com.helpinghands.infrastructure.repository.RequestRepository;
+import com.helpinghands.infrastructure.repository.ServiceProviderRepository;
+import com.helpinghands.infrastructure.storage.FileStorageService;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
+
+import java.io.InputStream;
+import java.util.List;
+import java.util.Set;
+
+@Service
+@RequiredArgsConstructor
+public class DocumentService {
+
+    private static final long MAX_FILE_SIZE_BYTES = 10L * 1024 * 1024; // 10 MB
+    private static final Set<String> ALLOWED_CONTENT_TYPES = Set.of(
+            "application/pdf", "image/jpeg", "image/png", "image/jpg"
+    );
+
+    private final DocumentRepository documentRepository;
+    private final ChildrensHomeRepository childrensHomeRepository;
+    private final ServiceProviderRepository serviceProviderRepository;
+    private final RequestRepository requestRepository;
+    private final FileStorageService fileStorageService;
+    private final CurrentUserResolver currentUserResolver;
+    private final AuditLogService auditLogService;
+
+    /**
+     * Content moderation: removes a single inappropriate document/image
+     * without touching the parent Request/ChildrensHome/ServiceProvider at
+     * all — soft-delete only (is_active = false), per the platform's
+     * no-hard-delete rule. Admin-only.
+     */
+    @Transactional
+    public void remove(Long documentId) {
+        Document document = documentRepository.findById(documentId)
+                .orElseThrow(() -> new ApiException("Document not found", HttpStatus.NOT_FOUND));
+
+        document.setIsActive(false);
+        document.setModifiedBy(currentUserResolver.getCurrentUser().getUsername());
+        document.setModifiedDate(java.time.LocalDateTime.now());
+        documentRepository.save(document);
+
+        auditLogService.record("DOCUMENT_REMOVED", document.getOwnerType().name(), document.getOwnerId(),
+                "Removed document #" + documentId + " (" + document.getOriginalFileName() + ")");
+    }
+
+    /**
+     * Self-service removal, distinct from the admin moderation remove()
+     * above: lets the owning Children's Home take down its own mistaken
+     * request-image upload without needing an administrator, but only
+     * while the request is still CREATED (once pledged, the images become
+     * part of a commitment the fulfiller is relying on) and only for
+     * REQUEST_IMAGE documents — verification documents still require an
+     * administrator either way.
+     */
+    @Transactional
+    public void removeOwnRequestImage(Long documentId) {
+        Document document = documentRepository.findById(documentId)
+                .orElseThrow(() -> new ApiException("Document not found", HttpStatus.NOT_FOUND));
+
+        if (document.getOwnerType() != DocumentOwnerType.REQUEST) {
+            throw new ApiException(
+                    "Only request images can be removed this way; other documents require an administrator",
+                    HttpStatus.FORBIDDEN);
+        }
+
+        Request request = requestRepository.findById(document.getOwnerId())
+                .orElseThrow(() -> new ApiException("Request not found", HttpStatus.NOT_FOUND));
+
+        User currentUser = currentUserResolver.getCurrentUser();
+        if (!request.getChildrensHome().getUser().getId().equals(currentUser.getId())) {
+            throw new ApiException("You do not have access to this resource", HttpStatus.FORBIDDEN);
+        }
+        if (request.getStatus() != RequestStatus.CREATED) {
+            throw new ApiException(
+                    "Images can only be removed while the request is still open (before anyone has pledged)",
+                    HttpStatus.CONFLICT);
+        }
+
+        document.setIsActive(false);
+        document.setModifiedBy(currentUser.getUsername());
+        document.setModifiedDate(java.time.LocalDateTime.now());
+        documentRepository.save(document);
+    }
+
+    @Transactional
+    public DocumentResponse upload(DocumentOwnerType ownerType, Long ownerId, DocumentType documentType,
+                                    String remarks, MultipartFile file) {
+        validateFile(file);
+        assertCanUpload(ownerType, ownerId);
+
+        // Verification documents (Home/Provider) are one-per-type: uploading
+        // a new certificate/report of a type that already has one replaces
+        // it, rather than piling up duplicates an admin has to sort through
+        // to find the current one. Request images are the one deliberate
+        // exception — a Home naturally wants several photos per request,
+        // so those keep accumulating freely.
+        if (ownerType != DocumentOwnerType.REQUEST) {
+            replaceExistingOfSameType(ownerType, ownerId, documentType);
+        }
+
+        String subFolder = ownerType.name().toLowerCase();
+        String storageKey = fileStorageService.store(file, subFolder);
+
+        Document document = new Document();
+        document.setOwnerType(ownerType);
+        document.setOwnerId(ownerId);
+        document.setDocumentType(documentType);
+        document.setOriginalFileName(file.getOriginalFilename());
+        document.setStoredFileName(storageKey);
+        document.setContentType(file.getContentType());
+        document.setFileSizeBytes(file.getSize());
+        document.setRemarks(remarks);
+
+        return toResponse(documentRepository.save(document));
+    }
+
+    @Transactional(readOnly = true)
+    public List<DocumentResponse> list(DocumentOwnerType ownerType, Long ownerId) {
+        assertCanView(ownerType, ownerId);
+        return documentRepository.findByOwnerTypeAndOwnerIdAndIsActiveTrue(ownerType, ownerId)
+                .stream().map(this::toResponse).toList();
+    }
+
+    @Transactional(readOnly = true)
+    public DownloadPayload download(Long documentId) {
+        Document document = documentRepository.findById(documentId)
+                .orElseThrow(() -> new ApiException("Document not found", HttpStatus.NOT_FOUND));
+
+        assertCanView(document.getOwnerType(), document.getOwnerId());
+
+        String subFolder = document.getOwnerType().name().toLowerCase();
+        InputStream stream = fileStorageService.retrieve(document.getStoredFileName(), subFolder);
+
+        return new DownloadPayload(stream, document.getOriginalFileName(), document.getContentType());
+    }
+
+    private void validateFile(MultipartFile file) {
+        if (file == null || file.isEmpty()) {
+            throw new ApiException("A file is required", HttpStatus.BAD_REQUEST);
+        }
+        if (file.getSize() > MAX_FILE_SIZE_BYTES) {
+            throw new ApiException("File exceeds the 10MB size limit", HttpStatus.BAD_REQUEST);
+        }
+        if (!ALLOWED_CONTENT_TYPES.contains(file.getContentType())) {
+            throw new ApiException("Only PDF, JPG, and PNG files are accepted", HttpStatus.BAD_REQUEST);
+        }
+    }
+
+    private void replaceExistingOfSameType(DocumentOwnerType ownerType, Long ownerId, DocumentType documentType) {
+        documentRepository.findByOwnerTypeAndOwnerIdAndIsActiveTrue(ownerType, ownerId).stream()
+                .filter(d -> d.getDocumentType() == documentType)
+                .forEach(d -> {
+                    d.setIsActive(false);
+                    d.setModifiedDate(java.time.LocalDateTime.now());
+                    documentRepository.save(d);
+                });
+    }
+
+    /**
+     * Only the profile's own user (or an Administrator) may upload a document
+     * to it — applies to all owner types, including REQUEST, since only the
+     * owning Children's Home should be able to attach images to its own request.
+     */
+    private void assertCanUpload(DocumentOwnerType ownerType, Long ownerId) {
+        assertIsOwnerOrAdmin(ownerType, ownerId);
+    }
+
+    /**
+     * Viewing rules differ by owner type: verification documents (Children's Home /
+     * Service Provider) stay private to the owner and Administrators, since they
+     * contain sensitive personal/registration data. Request images are part of a
+     * public marketplace listing — any authenticated user browsing requests needs
+     * to see them, so no ownership check is applied there.
+     */
+    private void assertCanView(DocumentOwnerType ownerType, Long ownerId) {
+        if (ownerType == DocumentOwnerType.REQUEST) {
+            currentUserResolver.getCurrentUser(); // still requires authentication, just not ownership
+            return;
+        }
+        assertIsOwnerOrAdmin(ownerType, ownerId);
+    }
+
+    /**
+     * Confirms the caller either IS the owner (their user_id matches the home/provider's
+     * user_id) or is an Administrator. Thrown as 403 rather than 404 to distinguish
+     * "exists but not yours" from "doesn't exist" — deliberate here since document
+     * ownership isn't sensitive to enumerate, unlike e.g. user accounts.
+     */
+    private void assertIsOwnerOrAdmin(DocumentOwnerType ownerType, Long ownerId) {
+        User currentUser = currentUserResolver.getCurrentUser();
+
+        boolean isAdmin = currentUser.getRoles().stream()
+                .anyMatch(r -> r.getName() == RoleName.ADMINISTRATOR);
+        if (isAdmin) return;
+
+        Long resolvedOwnerUserId = switch (ownerType) {
+            case CHILDRENS_HOME -> childrensHomeRepository.findById(ownerId)
+                    .map(h -> h.getUser().getId())
+                    .orElseThrow(() -> new ApiException("Children's Home not found", HttpStatus.NOT_FOUND));
+            case SERVICE_PROVIDER -> serviceProviderRepository.findById(ownerId)
+                    .map(p -> p.getUser().getId())
+                    .orElseThrow(() -> new ApiException("Service Provider not found", HttpStatus.NOT_FOUND));
+            case REQUEST -> requestRepository.findById(ownerId)
+                    .map(r -> r.getChildrensHome().getUser().getId())
+                    .orElseThrow(() -> new ApiException("Request not found", HttpStatus.NOT_FOUND));
+        };
+
+        if (!resolvedOwnerUserId.equals(currentUser.getId())) {
+            throw new ApiException("You do not have access to this resource", HttpStatus.FORBIDDEN);
+        }
+    }
+
+    private DocumentResponse toResponse(Document document) {
+        return new DocumentResponse(
+                document.getId(),
+                document.getOwnerType(),
+                document.getOwnerId(),
+                document.getDocumentType(),
+                document.getOriginalFileName(),
+                document.getContentType(),
+                document.getFileSizeBytes(),
+                document.getRemarks(),
+                document.getCreatedDate()
+        );
+    }
+
+    public record DownloadPayload(InputStream stream, String fileName, String contentType) {}
+}

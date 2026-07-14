@@ -1,0 +1,167 @@
+import React from 'react';
+import { Routes, Route, Navigate } from 'react-router-dom';
+import AppShell from './components/Layout/AppShell.jsx';
+import HomePage from './pages/HomePage.jsx';
+import LoginPage from './pages/LoginPage.jsx';
+import RegisterPage from './pages/RegisterPage.jsx';
+import ForgotPasswordPage from './pages/ForgotPasswordPage.jsx';
+import ResetPasswordPage from './pages/ResetPasswordPage.jsx';
+import VerifyEmailPage from './pages/VerifyEmailPage.jsx';
+import DashboardPage from './pages/DashboardPage.jsx';
+import UnauthorizedPage from './pages/UnauthorizedPage.jsx';
+import ChildrensHomeRegisterPage from './pages/ChildrensHomeRegisterPage.jsx';
+import ServiceProviderRegisterPage from './pages/ServiceProviderRegisterPage.jsx';
+import AdminVerificationPage from './pages/AdminVerificationPage.jsx';
+import AdminUsersPage from './pages/AdminUsersPage.jsx';
+import AdminAuditLogPage from './pages/AdminAuditLogPage.jsx';
+import AdminReportsPage from './pages/AdminReportsPage.jsx';
+import AdminFlaggedContentPage from './pages/AdminFlaggedContentPage.jsx';
+import DonorDirectoryPage from './pages/DonorDirectoryPage.jsx';
+import CreateRequestPage from './pages/CreateRequestPage.jsx';
+import RequestsListPage from './pages/RequestsListPage.jsx';
+import AvailableDeliveriesPage from './pages/AvailableDeliveriesPage.jsx';
+import RequestDetailPage from './pages/RequestDetailPage.jsx';
+import ProtectedRoute from './routes/ProtectedRoute.jsx';
+import { useAuth } from './hooks/useAuth.js';
+
+// Authenticated pages get the sidebar shell; public pages (login/register) don't.
+function Shell({ children }) {
+  return <AppShell>{children}</AppShell>;
+}
+
+// Logged-in visitors land on their dashboard; everyone else sees the public homepage.
+function RootRoute() {
+  const { user } = useAuth();
+  return user ? <Navigate to="/dashboard" replace /> : <HomePage />;
+}
+
+export default function App() {
+  return (
+    <Routes>
+      <Route path="/" element={<RootRoute />} />
+      <Route path="/login" element={<LoginPage />} />
+      <Route path="/register" element={<RegisterPage />} />
+      <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+      <Route path="/reset-password" element={<ResetPasswordPage />} />
+      <Route path="/verify-email" element={<VerifyEmailPage />} />
+      <Route path="/unauthorized" element={<UnauthorizedPage />} />
+
+      <Route
+        path="/dashboard"
+        element={
+          <ProtectedRoute>
+            <Shell><DashboardPage /></Shell>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/childrens-home"
+        element={
+          <ProtectedRoute allowedRoles={['CHILDRENS_HOME']}>
+            <Shell><ChildrensHomeRegisterPage /></Shell>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/service-provider"
+        element={
+          <ProtectedRoute allowedRoles={['SERVICE_PROVIDER']}>
+            <Shell><ServiceProviderRegisterPage /></Shell>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/requests"
+        element={
+          <ProtectedRoute>
+            <Shell><RequestsListPage /></Shell>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/deliveries/available"
+        element={
+          <ProtectedRoute allowedRoles={['DELIVERY_VOLUNTEER']}>
+            <Shell><AvailableDeliveriesPage /></Shell>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/requests/new"
+        element={
+          <ProtectedRoute allowedRoles={['CHILDRENS_HOME']}>
+            <Shell><CreateRequestPage /></Shell>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/requests/:id"
+        element={
+          <ProtectedRoute>
+            <Shell><RequestDetailPage /></Shell>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/admin/verification"
+        element={
+          <ProtectedRoute allowedRoles={['ADMINISTRATOR']}>
+            <Shell><AdminVerificationPage /></Shell>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/admin/users"
+        element={
+          <ProtectedRoute allowedRoles={['ADMINISTRATOR']}>
+            <Shell><AdminUsersPage /></Shell>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/admin/audit-log"
+        element={
+          <ProtectedRoute allowedRoles={['ADMINISTRATOR']}>
+            <Shell><AdminAuditLogPage /></Shell>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/admin/reports"
+        element={
+          <ProtectedRoute allowedRoles={['ADMINISTRATOR']}>
+            <Shell><AdminReportsPage /></Shell>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/directory/donors"
+        element={
+          <ProtectedRoute allowedRoles={['CHILDRENS_HOME']}>
+            <Shell><DonorDirectoryPage /></Shell>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/admin/flagged"
+        element={
+          <ProtectedRoute allowedRoles={['ADMINISTRATOR']}>
+            <Shell><AdminFlaggedContentPage /></Shell>
+          </ProtectedRoute>
+        }
+      />
+    </Routes>
+  );
+}

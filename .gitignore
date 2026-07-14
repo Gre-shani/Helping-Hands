@@ -1,0 +1,25 @@
+# Target environment files
+.env
+
+# Backend / Java / Maven dependencies
+target/
+*.class
+.mtj.tmp/
+*.jar
+*.war
+*.ear
+*.hsperfdata_*
+
+# Frontend / Node dependencies
+node_modules/
+/frontend/node_modules/
+/frontend/build/
+/frontend/dist/
+.eslintcache
+
+# IDE and System files
+.idea/
+*.iml
+.vscode/
+.DS_Store
+Thumbs.db

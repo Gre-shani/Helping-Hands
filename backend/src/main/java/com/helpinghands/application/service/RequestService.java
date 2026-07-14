@@ -1,0 +1,539 @@
+package com.helpinghands.application.service;
+
+import com.helpinghands.api.exception.ApiException;
+import com.helpinghands.application.dto.request.*;
+import com.helpinghands.domain.entity.*;
+import com.helpinghands.infrastructure.repository.ChildrensHomeRepository;
+import com.helpinghands.infrastructure.repository.RequestRepository;
+import com.helpinghands.infrastructure.repository.RequestSpecifications;
+import com.helpinghands.infrastructure.repository.RequestStatusHistoryRepository;
+import com.helpinghands.infrastructure.repository.ServiceProviderRepository;
+import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.domain.Specification;
+import org.springframework.http.HttpStatus;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.List;
+import java.util.Set;
+
+@Service
+@RequiredArgsConstructor
+public class RequestService {
+
+    private final RequestRepository requestRepository;
+    private final RequestStatusHistoryRepository historyRepository;
+    private final ChildrensHomeRepository childrensHomeRepository;
+    private final ServiceProviderRepository serviceProviderRepository;
+    private final CurrentUserResolver currentUserResolver;
+    private final RatingService ratingService;
+    private final AuditLogService auditLogService;
+    private final NotificationService notificationService;
+    private final com.helpinghands.infrastructure.repository.UserRepository userRepository;
+
+    @Transactional
+    public RequestResponse create(CreateRequestRequest req) {
+        User user = currentUserResolver.getCurrentVerifiedUser();
+        ChildrensHome home = childrensHomeRepository.findByUserId(user.getId())
+                .orElseThrow(() -> new ApiException("No Children's Home profile found for this account", HttpStatus.NOT_FOUND));
+
+        if (!home.isApproved()) {
+            throw new ApiException(
+                    "Your Children's Home must be approved before you can post requests",
+                    HttpStatus.FORBIDDEN);
+        }
+
+        if (req.requestType() == RequestType.GOODS && req.goodsCategory() == null) {
+            throw new ApiException("goodsCategory is required for GOODS requests", HttpStatus.BAD_REQUEST);
+        }
+        if (req.requestType() == RequestType.SERVICE && req.serviceCategory() == null) {
+            throw new ApiException("serviceCategory is required for SERVICE requests", HttpStatus.BAD_REQUEST);
+        }
+
+        Request request = new Request();
+        request.setChildrensHome(home);
+        request.setRequestType(req.requestType());
+        request.setGoodsCategory(req.requestType() == RequestType.GOODS ? req.goodsCategory() : null);
+        request.setServiceCategory(req.requestType() == RequestType.SERVICE ? req.serviceCategory() : null);
+        request.setTitle(req.title());
+        request.setDescription(req.description());
+        request.setQuantity(req.requestType() == RequestType.GOODS ? req.quantity() : null);
+        request.setUrgency(req.urgency());
+        request.setStatus(RequestStatus.CREATED);
+
+        Request saved = requestRepository.save(request);
+        recordHistory(saved, null, RequestStatus.CREATED, "Request created");
+
+        return toResponse(saved);
+    }
+
+    @Transactional
+    public RequestResponse update(Long id, UpdateRequestRequest req) {
+        Request request = getOwnedRequestOrThrow(id);
+
+        if (request.getStatus() != RequestStatus.CREATED) {
+            throw new ApiException("Only requests still in CREATED status can be edited", HttpStatus.CONFLICT);
+        }
+
+        request.setTitle(req.title());
+        request.setDescription(req.description());
+        if (request.isGoods()) {
+            request.setQuantity(req.quantity());
+        }
+        if (req.urgency() != null) {
+            request.setUrgency(req.urgency());
+        }
+
+        return toResponse(requestRepository.save(request));
+    }
+
+    @Transactional(readOnly = true)
+    public RequestResponse get(Long id) {
+        return toResponse(findOrThrow(id));
+    }
+
+    @Transactional(readOnly = true)
+    public Page<RequestResponse> browse(RequestStatus status, RequestType requestType, GoodsCategory goodsCategory,
+                                         ServiceCategory serviceCategory, UrgencyLevel urgency, Boolean flaggedOnly,
+                                         Pageable pageable) {
+        boolean isAdmin = isAdmin(currentUserResolver.getCurrentUser());
+
+        // Normally defaults to CREATED (the marketplace view). Exception: an admin
+        // explicitly asking for "flagged only" wants to see flagged items across
+        // every status — that's the whole point of a moderation queue — so status
+        // stays unfiltered unless they also pick one.
+        RequestStatus effective = status;
+        if (effective == null && !(isAdmin && Boolean.TRUE.equals(flaggedOnly))) {
+            effective = RequestStatus.CREATED;
+        }
+
+        Specification<Request> spec = Specification.where(RequestSpecifications.hasStatus(effective))
+                .and(RequestSpecifications.hasRequestType(requestType))
+                .and(RequestSpecifications.hasGoodsCategory(goodsCategory))
+                .and(RequestSpecifications.hasServiceCategory(serviceCategory))
+                .and(RequestSpecifications.hasUrgency(urgency));
+
+        if (isAdmin && Boolean.TRUE.equals(flaggedOnly)) {
+            spec = spec.and(RequestSpecifications.isFlagged());
+        } else if (!isAdmin) {
+            // Flagged content is hidden from everyone except Administrators, who are
+            // the ones doing the moderating — they need to see it to act on it.
+            spec = spec.and(RequestSpecifications.notFlagged());
+        }
+
+        return requestRepository.findAll(spec, pageable).map(this::toResponse);
+    }
+
+    @Transactional(readOnly = true)
+    public Page<RequestResponse> myRequests(Pageable pageable) {
+        User user = currentUserResolver.getCurrentUser();
+        ChildrensHome home = childrensHomeRepository.findByUserId(user.getId())
+                .orElseThrow(() -> new ApiException("No Children's Home profile found for this account", HttpStatus.NOT_FOUND));
+        return requestRepository.findByChildrensHomeId(home.getId(), pageable).map(this::toResponse);
+    }
+
+    @Transactional(readOnly = true)
+    public Page<RequestResponse> myPledges(Pageable pageable) {
+        User user = currentUserResolver.getCurrentUser();
+        return requestRepository.findByPledgedById(user.getId(), pageable).map(this::toResponse);
+    }
+
+    /**
+     * The list a Delivery Volunteer needed and didn't have: everything they
+     * claimed via claimDelivery() is invisible everywhere else, since
+     * claiming sets deliveryVolunteer, not pledgedBy — myPledges() alone
+     * would never show it.
+     */
+    @Transactional(readOnly = true)
+    public Page<RequestResponse> myClaimedDeliveries(Pageable pageable) {
+        User user = currentUserResolver.getCurrentUser();
+        return requestRepository.findByDeliveryVolunteerId(user.getId(), pageable).map(this::toResponse);
+    }
+
+    @Transactional(readOnly = true)
+    public List<RequestHistoryResponse> history(Long id) {
+        findOrThrow(id); // 404 if the request itself doesn't exist
+        return historyRepository.findByRequestIdOrderByChangedDateAsc(id).stream()
+                .map(h -> new RequestHistoryResponse(h.getFromStatus(), h.getToStatus(), h.getChangedBy(), h.getChangedDate(), h.getRemarks()))
+                .toList();
+    }
+
+    /**
+     * The single state-transition entry point. Rather than one endpoint per
+     * transition, every status change flows through here so the legal-transition
+     * table and the role rules live in exactly one place.
+     */
+    @Transactional
+    public RequestResponse changeStatus(Long id, RequestStatusChangeRequest change) {
+        Request request = findOrThrow(id);
+        RequestStatus from = request.getStatus();
+        RequestStatus to = change.status();
+
+        // Verification is only required at the point of a *new* commitment
+        // (pledging). Once a request is already past that point, requiring
+        // it again for every downstream step (accept, progress, deliver,
+        // complete, cancel) would strand any account that predates this
+        // gate and never verified — a real risk for existing data, not just
+        // a theoretical one.
+        User user = to == RequestStatus.PLEDGED
+                ? currentUserResolver.getCurrentVerifiedUser()
+                : currentUserResolver.getCurrentUser();
+
+        assertLegalTransition(from, to, isAdmin(user));
+        assertAuthorizedForTransition(request, user, from, to);
+
+        if (to == RequestStatus.PLEDGED) {
+            if (ratingService.isUserRestricted(user.getId())) {
+                throw new ApiException(
+                        "Your reputation score is too low to pledge to new requests. Contact an administrator.",
+                        HttpStatus.FORBIDDEN);
+            }
+            request.setPledgedBy(user);
+        }
+        if (to == RequestStatus.CANCELLED) {
+            request.setCancellationReason(change.remarks());
+        }
+        if (request.isGoods() && change.deliveryMethod() != null
+                && (to == RequestStatus.PLEDGED || to == RequestStatus.IN_PROGRESS || to == RequestStatus.DELIVERED)) {
+            request.setDeliveryMethod(change.deliveryMethod());
+            request.setCourierDetails(change.courierDetails());
+        }
+
+        request.setStatus(to);
+        Request saved = requestRepository.save(request);
+        recordHistory(saved, from, to, change.remarks());
+        notifyOnStatusChange(saved, to);
+
+        return toResponse(saved);
+    }
+
+    /**
+     * Who gets notified depends on which side of the transaction the status
+     * change affects. Deliberately not folded into assertAuthorizedForTransition
+     * (whose job is "who's allowed to do this") — this is "who should be told
+     * that it happened", a distinct concern with a different set of recipients.
+     */
+    private void notifyOnStatusChange(Request request, RequestStatus to) {
+        User homeUser = request.getChildrensHome().getUser();
+        User pledgedUser = request.getPledgedBy();
+        String link = "/requests/" + request.getId();
+
+        switch (to) {
+            case PLEDGED -> notificationService.notify(homeUser, NotificationType.REQUEST_PLEDGED,
+                    "Request Pledged", "\"" + request.getTitle() + "\" has been pledged by " + pledgedUser.getUsername() + ".", link);
+            case ACCEPTED -> notificationService.notify(pledgedUser, NotificationType.REQUEST_ACCEPTED,
+                    "Pledge Accepted", "Your pledge for \"" + request.getTitle() + "\" was accepted.", link);
+            case DELIVERED -> notificationService.notify(homeUser, NotificationType.REQUEST_DELIVERED,
+                    "Marked as Delivered", "\"" + request.getTitle() + "\" has been marked delivered. Please confirm completion.", link);
+            case COMPLETED -> notificationService.notify(pledgedUser, NotificationType.REQUEST_COMPLETED,
+                    "Request Completed", "\"" + request.getTitle() + "\" was confirmed complete. Thank you!", link);
+            case CANCELLED -> {
+                notificationService.notify(homeUser, NotificationType.REQUEST_CANCELLED,
+                        "Request Cancelled", "\"" + request.getTitle() + "\" was cancelled.", link);
+                if (pledgedUser != null) {
+                    notificationService.notify(pledgedUser, NotificationType.REQUEST_CANCELLED,
+                            "Request Cancelled", "\"" + request.getTitle() + "\", which you pledged to, was cancelled.", link);
+                }
+                checkForMisusePattern(homeUser, pledgedUser);
+            }
+            default -> { /* CREATED has no prior recipient to notify */ }
+        }
+    }
+
+    /**
+     * Content moderation — hides a request from the public marketplace without
+     * touching its lifecycle status, so a Home mid-fulfilment isn't forced into
+     * CANCELLED just because its description needs review. Admin-only, enforced
+     * at the controller (@PreAuthorize) and path level (SecurityConfig).
+     */
+    @Transactional
+    public RequestResponse setFlagged(Long id, boolean flagged, String reason) {
+        Request request = findOrThrow(id);
+        User admin = currentUserResolver.getCurrentUser();
+
+        request.setFlagged(flagged);
+        request.setFlagReason(flagged ? reason : null);
+        request.setFlaggedBy(flagged ? admin.getUsername() : null);
+        request.setFlaggedDate(flagged ? java.time.LocalDateTime.now() : null);
+
+        Request saved = requestRepository.save(request);
+        auditLogService.record(flagged ? "REQUEST_FLAGGED" : "REQUEST_UNFLAGGED", "REQUEST", id, reason);
+
+        if (flagged) {
+            notificationService.notify(request.getChildrensHome().getUser(), NotificationType.CONTENT_FLAGGED,
+                    "Request Flagged", "\"" + request.getTitle() + "\" was flagged by an administrator: " + reason,
+                    "/requests/" + request.getId());
+        }
+
+        return toResponse(saved);
+    }
+
+    /**
+     * Answers the specific scenario: a Donor pledged and chose "request a
+     * delivery volunteer," but no volunteer transport has materialized
+     * within a reasonable window (the scheduled reminder in
+     * SystemMaintenanceService flags this after 7 days). Rather than
+     * cancelling the Donor's pledge outright — they still supplied the
+     * goods — the owning Home can take over logistics by arranging their
+     * own alternative (e.g. a courier they pay for), recorded here without
+     * disturbing who gets credit/rated for the donation itself.
+     */
+    @Transactional
+    public RequestResponse arrangeAlternativeDelivery(Long id, String courierDetails) {
+        Request request = findOrThrow(id);
+        User homeUser = currentUserResolver.getCurrentVerifiedUser();
+
+        if (!request.getChildrensHome().getUser().getId().equals(homeUser.getId())) {
+            throw new ApiException("Only the requesting home can arrange alternative delivery", HttpStatus.FORBIDDEN);
+        }
+        if (!request.isGoods()) {
+            throw new ApiException("Alternative delivery only applies to goods requests", HttpStatus.BAD_REQUEST);
+        }
+        if (request.getDeliveryMethod() != DeliveryMethod.VOLUNTEER_PICKUP) {
+            throw new ApiException(
+                    "Alternative delivery only applies when a volunteer pickup was requested and hasn't progressed",
+                    HttpStatus.CONFLICT);
+        }
+        if (request.getStatus() == RequestStatus.DELIVERED || request.getStatus() == RequestStatus.COMPLETED
+                || request.getStatus() == RequestStatus.CANCELLED) {
+            throw new ApiException("This request has already moved past needing a delivery arrangement", HttpStatus.CONFLICT);
+        }
+
+        request.setDeliveryMethod(DeliveryMethod.COURIER);
+        request.setCourierDetails(courierDetails);
+        Request saved = requestRepository.save(request);
+
+        auditLogService.record("DELIVERY_ALTERNATIVE_ARRANGED", "REQUEST", id,
+                "Home arranged courier delivery after volunteer pickup stalled: " + courierDetails);
+
+        if (request.getPledgedBy() != null) {
+            notificationService.notify(request.getPledgedBy(), NotificationType.DELIVERY_ALTERNATIVE_ARRANGED,
+                    "Alternative Delivery Arranged",
+                    "\"" + request.getTitle() + "\" — the volunteer pickup hadn't progressed, so " + homeUser.getUsername()
+                            + " arranged a courier instead. Your pledge is still credited to you.",
+                    "/requests/" + request.getId());
+        }
+
+        return toResponse(saved);
+    }
+
+    /**
+     * The queue a Delivery Volunteer actually needed and didn't have: every
+     * request where a Donor chose "request a delivery volunteer" at pledge
+     * time, no volunteer has claimed it yet, and it hasn't been resolved
+     * another way. Without this, the volunteer preference had nowhere to
+     * surface once the request left the public CREATED marketplace.
+     */
+    @Transactional(readOnly = true)
+    public org.springframework.data.domain.Page<RequestResponse> listAvailableDeliveries(
+            org.springframework.data.domain.Pageable pageable) {
+        return requestRepository.findAvailableDeliveries(pageable).map(this::toResponse);
+    }
+
+    @Transactional
+    public RequestResponse claimDelivery(Long id) {
+        Request request = findOrThrow(id);
+        User volunteer = currentUserResolver.getCurrentVerifiedUser();
+
+        boolean isDeliveryVolunteer = volunteer.getRoles().stream()
+                .anyMatch(r -> r.getName() == RoleName.DELIVERY_VOLUNTEER);
+        if (!isDeliveryVolunteer) {
+            throw new ApiException("Only Delivery Volunteers can claim a delivery", HttpStatus.FORBIDDEN);
+        }
+        if (request.getDeliveryMethod() != DeliveryMethod.VOLUNTEER_PICKUP) {
+            throw new ApiException("This request isn't looking for a delivery volunteer", HttpStatus.CONFLICT);
+        }
+        if (request.getDeliveryVolunteer() != null) {
+            throw new ApiException("This delivery has already been claimed by another volunteer", HttpStatus.CONFLICT);
+        }
+        if (request.getPledgedBy() != null && request.getPledgedBy().getId().equals(volunteer.getId())) {
+            throw new ApiException("You're already the Donor on this request", HttpStatus.CONFLICT);
+        }
+
+        request.setDeliveryVolunteer(volunteer);
+        Request saved = requestRepository.save(request);
+
+        auditLogService.record("DELIVERY_CLAIMED", "REQUEST", id,
+                volunteer.getUsername() + " claimed the delivery volunteer task");
+
+        String link = "/requests/" + id;
+        notificationService.notify(request.getChildrensHome().getUser(), NotificationType.REQUEST_REMINDER,
+                "Delivery Volunteer Assigned",
+                volunteer.getUsername() + " will handle delivery for \"" + request.getTitle() + "\".", link);
+        if (request.getPledgedBy() != null) {
+            notificationService.notify(request.getPledgedBy(), NotificationType.REQUEST_REMINDER,
+                    "Delivery Volunteer Assigned",
+                    volunteer.getUsername() + " will pick up and deliver your donation for \"" + request.getTitle() + "\".", link);
+        }
+
+        return toResponse(saved);
+    }
+
+    private static final Set<RequestStatus> CANCELLABLE_FROM = Set.of(RequestStatus.CREATED, RequestStatus.PLEDGED);
+
+    private void assertLegalTransition(RequestStatus from, RequestStatus to, boolean isAdmin) {
+        if (isAdmin && to == RequestStatus.CANCELLED
+                && from != RequestStatus.COMPLETED && from != RequestStatus.CANCELLED) {
+            return; // admin dispute-resolution override: cancel from any non-terminal status
+        }
+
+        boolean legal = switch (from) {
+            case CREATED -> to == RequestStatus.PLEDGED || to == RequestStatus.CANCELLED;
+            case PLEDGED -> to == RequestStatus.ACCEPTED || to == RequestStatus.CANCELLED;
+            case ACCEPTED -> to == RequestStatus.IN_PROGRESS;
+            case IN_PROGRESS -> to == RequestStatus.DELIVERED;
+            case DELIVERED -> to == RequestStatus.COMPLETED;
+            case COMPLETED, CANCELLED -> false; // terminal states
+        };
+        if (!legal) {
+            throw new ApiException(
+                    "Cannot move a request from " + from + " to " + to,
+                    HttpStatus.CONFLICT);
+        }
+    }
+
+    private boolean isAdmin(User user) {
+        return user.getRoles().stream().anyMatch(r -> r.getName() == RoleName.ADMINISTRATOR);
+    }
+
+    private void assertAuthorizedForTransition(Request request, User user, RequestStatus from, RequestStatus to) {
+        boolean isAdmin = user.getRoles().stream().anyMatch(r -> r.getName() == RoleName.ADMINISTRATOR);
+        if (isAdmin) return; // admins can override any transition (moderation/dispute resolution)
+
+        boolean isOwningHome = request.getChildrensHome().getUser().getId().equals(user.getId());
+        boolean isPledgedUser = request.getPledgedBy() != null && request.getPledgedBy().getId().equals(user.getId());
+        boolean isAssignedVolunteer = request.getDeliveryVolunteer() != null
+                && request.getDeliveryVolunteer().getId().equals(user.getId());
+
+        boolean authorized = switch (to) {
+            case PLEDGED -> {
+                // Must NOT be the owning home, and role must match the request type.
+                if (isOwningHome) yield false;
+                if (request.isGoods()) {
+                    // Delivery Volunteers are a transport-only variant of Donor per the spec —
+                    // no direct child interaction, no police clearance — so they can pledge
+                    // to goods requests exactly like a Donor.
+                    yield user.getRoles().stream().anyMatch(r ->
+                            r.getName() == RoleName.DONOR || r.getName() == RoleName.DELIVERY_VOLUNTEER);
+                }
+                // SERVICE requests: role alone isn't enough — the provider profile
+                // itself must be APPROVED and, if police clearance is required,
+                // verified. Unverified providers must never be able to pledge.
+                boolean isServiceProvider = user.getRoles().stream().anyMatch(r -> r.getName() == RoleName.SERVICE_PROVIDER);
+                if (!isServiceProvider) yield false;
+                yield serviceProviderRepository.findByUserId(user.getId())
+                        .map(ServiceProvider::isEligibleToOfferServices)
+                        .orElse(false);
+            }
+            case ACCEPTED -> isOwningHome;
+            case IN_PROGRESS -> isPledgedUser || isOwningHome || isAssignedVolunteer;
+            case DELIVERED -> isPledgedUser || isAssignedVolunteer;
+            case COMPLETED -> isOwningHome; // home confirms completion, per spec
+            case CANCELLED -> isOwningHome && CANCELLABLE_FROM.contains(from);
+            default -> false;
+        };
+
+        if (!authorized) {
+            throw new ApiException("You are not permitted to make this status change", HttpStatus.FORBIDDEN);
+        }
+    }
+
+    /**
+     * Answers the SRS's "Detect fraud or misuse" System use case with a
+     * bounded, explainable heuristic rather than a black-box model: a home
+     * or fulfiller with an unusually high number of cancelled requests gets
+     * flagged for admin review. Not a determination of guilt — just a
+     * signal, exactly like the "flag repeated suspicious activities"
+     * requirement for login attempts.
+     */
+    private static final long CANCELLATION_MISUSE_THRESHOLD = 3;
+
+    private void checkForMisusePattern(User homeUser, User pledgedUser) {
+        long homeCancellations = requestRepository.countCancelledByHome(homeUser.getId());
+        if (homeCancellations == CANCELLATION_MISUSE_THRESHOLD) {
+            alertAdminsOfMisuse(homeUser, homeCancellations, "Children's Home");
+        }
+
+        if (pledgedUser != null) {
+            long userCancellations = requestRepository.countCancelledByPledgedUser(pledgedUser.getId());
+            if (userCancellations == CANCELLATION_MISUSE_THRESHOLD) {
+                alertAdminsOfMisuse(pledgedUser, userCancellations, "Donor/Provider");
+            }
+        }
+    }
+
+    private void alertAdminsOfMisuse(User subject, long cancellationCount, String subjectRole) {
+        String message = subjectRole + " \"" + subject.getUsername() + "\" has had " + cancellationCount
+                + " requests cancelled — pattern flagged for review, not an automatic penalty.";
+
+        auditLogService.record("POSSIBLE_MISUSE_DETECTED", "USER", subject.getId(), message);
+
+        for (User admin : userRepository.findAllActiveByRoleName(RoleName.ADMINISTRATOR)) {
+            notificationService.notify(admin, NotificationType.POSSIBLE_MISUSE_DETECTED,
+                    "Possible Misuse Detected", message, "/admin/users");
+        }
+    }
+
+    // ---- Helpers ----
+
+    private Request findOrThrow(Long id) {
+        return requestRepository.findById(id)
+                .orElseThrow(() -> new ApiException("Request not found", HttpStatus.NOT_FOUND));
+    }
+
+    private Request getOwnedRequestOrThrow(Long id) {
+        Request request = findOrThrow(id);
+        User user = currentUserResolver.getCurrentUser();
+        if (!request.getChildrensHome().getUser().getId().equals(user.getId())) {
+            throw new ApiException("You do not own this request", HttpStatus.FORBIDDEN);
+        }
+        return request;
+    }
+
+    private void recordHistory(Request request, RequestStatus from, RequestStatus to, String remarks) {
+        RequestStatusHistory history = new RequestStatusHistory();
+        history.setRequest(request);
+        history.setFromStatus(from);
+        history.setToStatus(to);
+        history.setChangedBy(currentUserResolver.getCurrentUser().getUsername());
+        history.setRemarks(remarks);
+        historyRepository.save(history);
+    }
+
+    /**
+     * Public wrapper around the response mapping — used by RequestMatchingService
+     * so recommended-requests results are shaped identically to every other
+     * request listing, without duplicating the mapping logic.
+     */
+    public RequestResponse toResponsePublic(Request request) {
+        return toResponse(request);
+    }
+
+    private RequestResponse toResponse(Request r) {
+        return new RequestResponse(
+                r.getId(),
+                r.getChildrensHome().getId(),
+                r.getChildrensHome().getHomeName(),
+                r.getRequestType(),
+                r.getGoodsCategory(),
+                r.getServiceCategory(),
+                r.getTitle(),
+                r.getDescription(),
+                r.getQuantity(),
+                r.getUrgency(),
+                r.getStatus(),
+                r.getPledgedBy() != null ? r.getPledgedBy().getId() : null,
+                r.getPledgedBy() != null ? r.getPledgedBy().getUsername() : null,
+                r.getCancellationReason(),
+                r.getFlagged(),
+                r.getFlagReason(),
+                r.getDeliveryMethod(),
+                r.getCourierDetails(),
+                r.getDeliveryVolunteer() != null ? r.getDeliveryVolunteer().getId() : null,
+                r.getDeliveryVolunteer() != null ? r.getDeliveryVolunteer().getUsername() : null,
+                r.getCreatedDate()
+        );
+    }
+}

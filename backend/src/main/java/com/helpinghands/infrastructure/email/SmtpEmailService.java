@@ -1,0 +1,114 @@
+package com.helpinghands.infrastructure.email;
+
+import lombok.RequiredArgsConstructor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.mail.javamail.JavaMailSender;
+import org.springframework.mail.javamail.MimeMessageHelper;
+import org.springframework.scheduling.annotation.Async;
+import org.springframework.stereotype.Service;
+
+import jakarta.mail.internet.MimeMessage;
+
+/**
+ * SMTP-based sending. Only active when app.email-provider=smtp — the
+ * default is now ResendEmailService (see its class comment for why: Render
+ * and similar free-tier hosts block outbound SMTP ports regardless of
+ * credentials). This class remains for the docker-compose/VPS self-hosting
+ * path, where a real SMTP connection isn't blocked at the network level.
+ *
+ * Every send here is @Async: the calling HTTP request (register,
+ * resend-verification, forgot-password) returns as soon as the token is
+ * issued, without waiting on SMTP at all. This is what actually fixes a
+ * slow/unreachable mail server appearing as a frontend request that never
+ * resolves — previously the whole HTTP call blocked on mailSender.send().
+ * Combined with the SMTP timeouts in application.yml, a failure here is now
+ * fully isolated: it can only ever show up in the server logs, never as a
+ * hung request in the browser.
+ */
+@Service
+@ConditionalOnProperty(name = "app.email-provider", havingValue = "smtp")
+@RequiredArgsConstructor
+public class SmtpEmailService implements EmailService {
+
+    private static final Logger log = LoggerFactory.getLogger(SmtpEmailService.class);
+
+    private final JavaMailSender mailSender;
+
+    @Value("${mail.from-address}")
+    private String fromAddress;
+
+    @Override
+    @Async
+    public void sendVerificationEmail(String toEmail, String recipientName, String verificationLink) {
+        String subject = "Verify your Helping Hands account";
+        String body = """
+                <p>Hi %s,</p>
+                <p>Thanks for registering with Helping Hands. Please confirm your email address to activate your account:</p>
+                <p><a href="%s">Verify my email</a></p>
+                <p>This link expires in 24 hours. If you didn't create this account, you can ignore this email.</p>
+                """.formatted(recipientName, verificationLink);
+        send(toEmail, subject, body);
+    }
+
+    @Override
+    @Async
+    public void sendPasswordResetEmail(String toEmail, String recipientName, String resetLink) {
+        String subject = "Reset your Helping Hands password";
+        String body = """
+                <p>Hi %s,</p>
+                <p>We received a request to reset your Helping Hands password. Click below to choose a new one:</p>
+                <p><a href="%s">Reset my password</a></p>
+                <p>This link expires in 1 hour. If you didn't request this, you can safely ignore this email —
+                your password will not be changed.</p>
+                """.formatted(recipientName, resetLink);
+        send(toEmail, subject, body);
+    }
+
+    @Override
+    @Async
+    public void sendNotificationEmail(String toEmail, String recipientName, String subject, String message, String actionLink) {
+        String linkHtml = actionLink != null
+                ? "<p><a href=\"%s\">View details</a></p>".formatted(actionLink)
+                : "";
+        String body = """
+                <p>Hi %s,</p>
+                <p>%s</p>
+                %s
+                """.formatted(recipientName, message, linkHtml);
+        send(toEmail, subject, body);
+    }
+
+    @Override
+    @Async
+    public void sendMfaCodeEmail(String toEmail, String recipientName, String code) {
+        String subject = "Your Helping Hands admin login code";
+        String body = """
+                <p>Hi %s,</p>
+                <p>Your one-time login code is:</p>
+                <p style="font-size: 28px; font-weight: 700; letter-spacing: 4px;">%s</p>
+                <p>This code expires in 5 minutes. If you didn't try to log in, you can ignore this email —
+                your account has not been accessed.</p>
+                """.formatted(recipientName, code);
+        send(toEmail, subject, body);
+    }
+
+    private void send(String toEmail, String subject, String htmlBody) {
+        try {
+            MimeMessage message = mailSender.createMimeMessage();
+            MimeMessageHelper helper = new MimeMessageHelper(message, "UTF-8");
+            helper.setFrom(fromAddress);
+            helper.setTo(toEmail);
+            helper.setSubject(subject);
+            helper.setText(htmlBody, true);
+            mailSender.send(message);
+        } catch (Exception e) {
+            // Deliberately don't rethrow: a transient email-provider outage
+            // shouldn't fail registration or the password-reset request itself
+            // (the token still exists and can be resent). Logged for visibility.
+            log.error("Failed to send email to {}: {}", toEmail, e.getMessage());
+        }
+    }
+}

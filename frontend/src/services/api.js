@@ -1,78 +1,35 @@
 import axios from 'axios';
 
-const API_URL = "http://localhost:8081/api/users";
-const PROFILE_API_URL = "http://localhost:8081/api/profiles";
-const DOCUMENTS_API_URL = "http://localhost:8081/api/documents";
+// In local dev, Vite's proxy handles /api -> localhost:8080 (see vite.config.js).
+// In production (e.g. Vercel), set VITE_API_BASE_URL to your deployed backend's
+// URL, e.g. https://helping-hands-backend.onrender.com/api/v1
+const baseURL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
 
-// ===== User Auth =====
-export const registerUser = (userData) => {
-    return axios.post(`${API_URL}/register`, userData);
-};
+const api = axios.create({
+  baseURL,
+  headers: { 'Content-Type': 'application/json' }
+});
 
-export const loginUser = (userData) => {
-    return axios.post(`${API_URL}/login`, userData);
-};
+// Attach the JWT to every outgoing request once the user is logged in.
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('hh_access_token');
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
 
-// ===== Profile Management =====
-export const getCompletionStatus = (userId) => {
-    return axios.get(`${PROFILE_API_URL}/${userId}/completion-status`);
-};
+// Global 401 handling: token is invalid/expired -> force re-login.
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      localStorage.removeItem('hh_access_token');
+      localStorage.removeItem('hh_user');
+      window.location.href = '/login';
+    }
+    return Promise.reject(error);
+  }
+);
 
-export const initializeProfile = (userId, role) => {
-    return axios.post(`${PROFILE_API_URL}/${userId}/initialize`, { role });
-};
-
-export const updateProfileProgress = (userId, completionPercentage) => {
-    return axios.post(`${PROFILE_API_URL}/${userId}/update-progress`, { completionPercentage });
-};
-
-export const markProfileComplete = (userId) => {
-    return axios.post(`${PROFILE_API_URL}/${userId}/mark-complete`);
-};
-
-// ===== Document Upload =====
-export const uploadDocument = (file, userId, documentType) => {
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('userId', userId);
-    formData.append('documentType', documentType);
-
-    return axios.post(`${DOCUMENTS_API_URL}/upload`, formData, {
-        headers: {
-            'Content-Type': 'multipart/form-data'
-        }
-    });
-};
-
-export const getDocuments = (userId) => {
-    return axios.get(`${DOCUMENTS_API_URL}/${userId}`);
-};
-
-export const deleteDocument = (documentId) => {
-    return axios.delete(`${DOCUMENTS_API_URL}/${documentId}`);
-};
-
-// ===== Profile Setup =====
-export const submitChildrenHomeProfile = (userId, data) => {
-    return axios.post(`${PROFILE_API_URL}/children-home`, data, {
-        headers: {
-            'X-User-Id': userId
-        }
-    });
-};
-
-export const submitServiceProviderProfile = (userId, data) => {
-    return axios.post(`${PROFILE_API_URL}/service-provider`, data, {
-        headers: {
-            'X-User-Id': userId
-        }
-    });
-};
-
-export const submitDeliveryVolunteerProfile = (userId, data) => {
-    return axios.post(`${PROFILE_API_URL}/delivery-volunteer`, data, {
-        headers: {
-            'X-User-Id': userId
-        }
-    });
-};
+export default api;
